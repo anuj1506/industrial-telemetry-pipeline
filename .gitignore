@@ -1,0 +1,9 @@
+# Raw and processed data should not be tracked in git
+data/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# VS Code settings (optional, personal preference)
+.vscode/
