@@ -30,7 +30,8 @@ def process_telemetry_data(file_path):
 
     # FLAG 3: Genuine offline state (NOT an error — informational)
     # Night-time / curtailment: power_real == 0 AND voltage is also low.
-    df['flag_offline_normal'] = (df['pvexport_data_power_real'] == 0) & (df['pvexport_data_voltage'] < 100)
+    df['flag_offline_normal'] = (df['pvexport_data_power_real'] == 0)
+
 
     # FLAG 4: Negative reactive power — informational only, NOT an error
     df['flag_negative_reactive'] = df['pvexport_data_power_reactive'] < 0
@@ -52,3 +53,4 @@ def process_telemetry_data(file_path):
 if __name__ == "__main__":
     RAW_DATA_PATH = r"D:\industrial-telemetry-pipeline\data\raw\solar_scada_raw\MANSLR1.pvexport_data.parquet"
     process_telemetry_data(RAW_DATA_PATH)
+    #
