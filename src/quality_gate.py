@@ -20,32 +20,60 @@ def process_telemetry_data(file_path):
     # low-end blind spot, instead of guessing a threshold.
     # ------------------------------------------------------------------
     current_blind_spot_rows = df[(df['pvexport_data_current'] == 0) & (df['pvexport_data_power_real'] > 0)]
-    current_threshold = current_blind_spot_rows['pvexport_data_power_real'].max()
+    current_threshold = current_blind_spot_rows['pvexport_data_power_real'].quantile(0.95)
 
     print("=== INVESTIGATING CURRENT SENSOR BLIND SPOT ===")
     print(f"Rows where current=0 but power>0: {len(current_blind_spot_rows)}")
-    print(f"Highest power_real seen while current still read 0: {current_threshold}\n")
+    print(f"95th percentile power_real while current still read 0: {current_threshold}\n")
 
     print("=== QUALITY GATE: FLAGGING (not dropping) ===\n")
 
     # FLAG 1: Missing sensor pings
     df['flag_missing_reading'] = df.isnull().any(axis=1)
 
-    # FLAG 2: Physically impossible combination.
+    # ------------------------------------------------------------------
+    # NEW: look at neighboring minutes using .shift(), so we can tell apart
+    # a smooth sunrise/sunset blind-spot ramp from a genuine one-minute glitch
+    # ------------------------------------------------------------------
+    df['current_prev_minute'] = df['pvexport_data_current'].shift(1)
+    df['current_next_minute'] = df['pvexport_data_current'].shift(-1)
+
+    # FLAG 2: Physically impossible combination (voltage/frequency checks stay strict)
     impossible_voltage = (df['pvexport_data_voltage'] == 0) & (df['pvexport_data_power_real'] > 0)
     impossible_frequency = (df['pvexport_data_frequency'] == 0) & (df['pvexport_data_power_real'] > 0)
 
-    # KNOWN ISSUE (WIP): current_threshold is the MAX power value seen in the
-    # blind-spot group itself, which means "power > current_threshold" can
-    # mathematically never be true for rows IN that same group — it's a
-    # circular check that guarantees 0 glitches regardless of real data.
-    # TODO: replace with a percentile-based threshold (e.g. 95th/99th) so a
-    # few genuine high-power glitches can still surface instead of being
-    # silently absorbed into "normal blind spot" territory.
+    # Current check: power high enough (above 95th percentile of the blind-spot
+    # group) that current=0 no longer makes sense at all, regardless of timing.
     impossible_current = (df['pvexport_data_current'] == 0) & (df['pvexport_data_power_real'] > current_threshold)
 
-    df['flag_sensor_glitch'] = impossible_voltage | impossible_frequency | impossible_current
-    
+    # NEW: isolated single-minute current DROPOUT during daytime — current=0
+    # for exactly one minute, with non-zero readings right before and after,
+    # while power is actively flowing. Different from the blind spot: this can
+    # happen at ANY power level, not just near the sunrise/sunset threshold.
+    isolated_current_dropout = (
+        (df['pvexport_data_current'] == 0) &
+        (df['current_prev_minute'] != 0) &
+        (df['current_next_minute'] != 0) &
+        (df['pvexport_data_power_real'] > 0)
+    )
+
+    # NEW: isolated single-minute current SPIKE during a moment with no real
+    # or reactive power at all — current has no electrical reason to exist.
+    # Small tolerance (+-1) used instead of an exact 0, since reactive power
+    # readings are rarely exactly zero even when negligible.
+    isolated_current_spike = (
+        (df['pvexport_data_power_real'] == 0) &
+        (df['pvexport_data_power_reactive'].between(-1, 1)) &
+        (df['current_prev_minute'] == 0) &
+        (df['pvexport_data_current'] != 0) &
+        (df['current_next_minute'] == 0)
+    )
+
+    df['flag_sensor_glitch'] = (
+        impossible_voltage | impossible_frequency | impossible_current
+        | isolated_current_dropout | isolated_current_spike
+    )
+
     # FLAG 3: Grid genuinely de-energized — power, voltage, AND frequency
     # all zero together. Rarer and more serious than ordinary night.
     df['flag_grid_deenergized'] = (
